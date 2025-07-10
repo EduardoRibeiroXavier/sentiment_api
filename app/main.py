@@ -2,6 +2,8 @@ from fastapi import FastAPI, Query, HTTPException
 from transformers import pipeline
 import json
 import os
+from typing import List, Dict
+from functools import lru_cache
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -25,15 +27,26 @@ try:
     with open(json_path, "r", encoding="utf-8") as f:
         comentarios_raw = json.load(f)
     print(f"DEBUG: Carregados {len(comentarios_raw)} comentários")
+    # Ordenar uma vez na inicialização para melhor performance
+    comentarios_raw = sorted(
+        comentarios_raw,
+        key=lambda c: c.get("data_criacao", ""),
+        reverse=True
+    )
 except FileNotFoundError:
     print(f"ERROR: Arquivo não encontrado em {json_path}")
     comentarios_raw = []
 
 
-sentiment_model = pipeline(
-    "sentiment-analysis",
-    model="cardiffnlp/twitter-xlm-roberta-base-sentiment"
-)
+# Cache do modelo para evitar recarregar
+@lru_cache(maxsize=1)
+def get_sentiment_model():
+    return pipeline(
+        "sentiment-analysis",
+        model="cardiffnlp/twitter-xlm-roberta-base-sentiment",
+        return_all_scores=False,
+        device=-1  # Força CPU para economizar memória
+    )
 
 
 @app.get("/debug/keys/")
@@ -44,15 +57,14 @@ def debug_keys():
 
 @app.get("/comentarios/")
 def listar_comentarios(page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100)):
-    comentarios_ordenados = sorted(
-        comentarios_raw,
-        key=lambda c: c.get("data_criacao", ""),
-        reverse=True
-    )
+    # Dados já ordenados na inicialização
     start = (page - 1) * limit
     end = start + limit
     comentarios = []
-    for c in comentarios_ordenados[start:end]:
+
+    sentiment_model = get_sentiment_model()
+
+    for c in comentarios_raw[start:end]:
         texto = c.get("corpo", "").strip()
         if not texto:
             continue
@@ -74,17 +86,18 @@ def listar_comentarios(page: int = Query(1, ge=1), limit: int = Query(30, ge=1, 
         })
     return {
         "comentarios": comentarios,
-        "total": len(comentarios_ordenados)
+        "total": len(comentarios_raw)
     }
+
+
 @app.get("/debug/")
 def debug():
     return {"total_comentarios": len(comentarios_raw)}
 
 
+@app.get("/propostas/")
 def listar_propostas():
-
     ids_unicos = sorted({c["id_comentavel_raiz"] for c in comentarios_raw})
-
     return [{"id": i, "titulo": f"Proposta {i}"} for i in ids_unicos]
 
 
@@ -101,6 +114,8 @@ def analisar_sentimentos(id_proposta: str = Query(..., alias="id")):
         )
 
     resultados = []
+    sentiment_model = get_sentiment_model()
+
     for c in filtrados:
         texto = c.get("corpo", "").strip()
         if not texto:
@@ -108,7 +123,7 @@ def analisar_sentimentos(id_proposta: str = Query(..., alias="id")):
 
         analysis = sentiment_model(texto, truncation=True)
         pred = analysis[0]
-        label = pred.get("label", "").lower()  
+        label = pred.get("label", "").lower()
         score = round(pred.get("score", 0.0), 3)
 
         if label == "positive":

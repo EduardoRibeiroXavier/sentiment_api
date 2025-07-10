@@ -1,8 +1,4 @@
-fastapi
-uvicorn
-textblob
-transformers
-torch
-tiktoken
-protobuf
-sentencepiece
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+transformers==4.35.2
+torch==2.1.1
